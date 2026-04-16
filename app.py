@@ -296,12 +296,12 @@ def generar_texto_examen():
 
 def get_api_key():
     try:
-        key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        key = st.secrets["ANTHROPIC_API_KEY"].strip()
         if key:
             return key
     except Exception:
         pass
-    return st.session_state.get("api_key", "")
+    return st.session_state.get("api_key", "").strip()
 
 
 def ia_generar(prompt_texto):
@@ -518,6 +518,7 @@ with st.sidebar:
     st.header("Configuración")
     if get_api_key():
         st.success("IA lista para usar")
+        st.caption(f"Key: ...{get_api_key()[-6:]}")
     else:
         api_input = st.text_input(
             "API Key Anthropic",
