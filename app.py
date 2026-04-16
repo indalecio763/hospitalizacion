@@ -1,5 +1,6 @@
 import streamlit as st
 import anthropic
+import json
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -247,6 +248,10 @@ def init_state():
         "plan_ordenes": [],
         "plan_solicitudes": "",
         "plan_otro": "",
+        "ia_plan_visible": False,
+        "ia_plan_meds_texto": "",
+        "ia_plan_examenes_texto": "",
+        "ia_plan_indicaciones_texto": "",
         "api_key": st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY", "")),
     }
     for k, v in defaults.items():
@@ -368,6 +373,46 @@ Instrucciones:
 - 2-3 párrafos cortos: (1) integrar situación clínica, (2) hallazgos relevantes al examen, (3) conducta y justificación
 - Conciso, sin repetir datos ya conocidos
 - Máximo 200 palabras"""
+
+
+def prompt_plan():
+    genero = "FEMENINA" if st.session_state["sexo"] == "FEMENINO" else "MASCULINO"
+    edad = st.session_state["edad"]
+    ant_pat = list(st.session_state["ant_patologicos"])
+    if st.session_state["ant_patologicos_otro"].strip():
+        ant_pat.append(st.session_state["ant_patologicos_otro"].strip().upper())
+    ant_farm = st.session_state["ant_farmacologicos_texto"].strip()
+    ant_alerg = st.session_state["ant_alergicos"].strip()
+    diags = [d.strip() for d in st.session_state["diagnosticos"] if d.strip()]
+    ta_sist = st.session_state["ta_sist"]
+    ta_diast = st.session_state["ta_diast"]
+    sv = f"TA {ta_sist}/{ta_diast} mmHg, FC {st.session_state['fc']} lpm, FR {st.session_state['fr']} rpm, Temp {st.session_state['temp']}°C, SpO2 {st.session_state['spo2']}%, Glucometría {st.session_state['glucometria_sv']} mg/dL"
+
+    return f"""Eres un médico internista colombiano experto en manejo hospitalario. Genera recomendaciones de plan de manejo para un paciente de ingreso a sala general.
+
+Datos del paciente:
+- Paciente {genero}, {edad} años
+- Antecedentes patológicos: {', '.join(ant_pat) if ant_pat else 'NO REFIERE'}
+- Medicamentos previos: {ant_farm if ant_farm else 'NO REFIERE'}
+- Alergias: {ant_alerg if ant_alerg else 'NIEGA'}
+- Signos vitales: {sv}
+- Diagnósticos actuales: {'; '.join(diags) if diags else 'NO DEFINIDOS'}
+
+Responde ÚNICAMENTE con un JSON válido con esta estructura exacta (sin texto adicional antes ni después):
+{{
+  "medicamentos": [
+    {{"medicamento": "NOMBRE", "dosis": "DOSIS", "via": "VO/IV/SC/IM", "frecuencia": "CADA X HORAS"}}
+  ],
+  "examenes": "EXAMEN 1\\nEXAMEN 2\\nEXAMEN 3",
+  "indicaciones": "INDICACIÓN 1\\nINDICACIÓN 2"
+}}
+
+Instrucciones:
+- Medicamentos: incluye los habituales de manejo hospitalario según los diagnósticos (analgesia, protección gástrica, anticoagulación si aplica, manejo de patologías de base, etc.). No repitas medicamentos que ya estén en antecedentes farmacológicos salvo que sea necesario ajustarlos. Respeta alergias.
+- Exámenes: paraclínicos de ingreso relevantes y valoraciones por especialidad según el caso
+- Indicaciones: órdenes de enfermería y cuidados pertinentes
+- Todo en mayúsculas
+- Máximo 12 medicamentos, 8 exámenes, 6 indicaciones"""
 
 
 # ── PDF ────────────────────────────────────────────────────────────────────────
@@ -808,6 +853,90 @@ with tabs[5]:
 # ── TAB 7: PLAN ────────────────────────────────────────────────────────────────
 with tabs[6]:
     st.subheader("Plan de Manejo")
+
+    # ── RECOMENDACIÓN IA ──
+    c_btn, c_lbl = st.columns([1, 3])
+    with c_btn:
+        if st.button("Recomendar plan con IA", type="secondary", use_container_width=True):
+            diags_check = [d.strip() for d in st.session_state["diagnosticos"] if d.strip()]
+            if not diags_check:
+                st.warning("Agrega al menos un diagnóstico antes de generar el plan.")
+            else:
+                with st.spinner("Generando recomendaciones..."):
+                    raw = ia_generar(prompt_plan())
+                    try:
+                        # IA returns uppercase JSON — normalize quotes and parse
+                        data = json.loads(raw)
+                        meds = data.get("medicamentos", [])
+                        st.session_state["ia_plan_meds_texto"] = "\n".join(
+                            f"{m.get('medicamento','')} | {m.get('dosis','')} | {m.get('via','')} | {m.get('frecuencia','')}"
+                            for m in meds
+                        )
+                        st.session_state["ia_plan_examenes_texto"] = data.get("examenes", "")
+                        st.session_state["ia_plan_indicaciones_texto"] = data.get("indicaciones", "")
+                    except Exception:
+                        st.session_state["ia_plan_meds_texto"] = raw
+                        st.session_state["ia_plan_examenes_texto"] = ""
+                        st.session_state["ia_plan_indicaciones_texto"] = ""
+                    st.session_state["ia_plan_visible"] = True
+
+    with c_lbl:
+        st.caption("La IA recomienda medicamentos, exámenes e indicaciones según los diagnósticos. Debes revisar y aprobar antes de cargar al plan.")
+
+    # ── PANEL DE REVISIÓN ──
+    if st.session_state["ia_plan_visible"]:
+        st.warning("**REVISA LAS RECOMENDACIONES ANTES DE CARGAR AL PLAN. Edita lo que necesites.**")
+
+        ia_meds_edit = st.text_area(
+            "Medicamentos recomendados (formato: MEDICAMENTO | DOSIS | VÍA | FRECUENCIA)",
+            value=st.session_state["ia_plan_meds_texto"],
+            height=200,
+            key="ia_meds_edit",
+        )
+        ia_exam_edit = st.text_area(
+            "Exámenes y valoraciones recomendados",
+            value=st.session_state["ia_plan_examenes_texto"],
+            height=120,
+            key="ia_exam_edit",
+        )
+        ia_ind_edit = st.text_area(
+            "Indicaciones adicionales recomendadas",
+            value=st.session_state["ia_plan_indicaciones_texto"],
+            height=100,
+            key="ia_ind_edit",
+        )
+
+        col_ap, col_can = st.columns([1, 1])
+        with col_ap:
+            if st.button("Aprobar y cargar al plan", type="primary", use_container_width=True):
+                # Cargar medicamentos
+                nuevos_meds = []
+                for linea in ia_meds_edit.strip().split("\n"):
+                    partes = [p.strip() for p in linea.split("|")]
+                    if len(partes) == 4 and partes[0]:
+                        via = partes[2] if partes[2] in VIA_ADMIN else "VO"
+                        freq = partes[3] if partes[3] in FRECUENCIAS else partes[3]
+                        nuevos_meds.append({"med": partes[0], "dosis": partes[1], "via": via, "freq": freq})
+                if nuevos_meds:
+                    existing = [m for m in st.session_state["plan_medicamentos"] if m["med"].strip()]
+                    st.session_state["plan_medicamentos"] = existing + nuevos_meds
+                # Cargar exámenes
+                if ia_exam_edit.strip():
+                    actual = st.session_state["plan_solicitudes"].strip()
+                    st.session_state["plan_solicitudes"] = (actual + "\n" + ia_exam_edit.strip()).strip()
+                # Cargar indicaciones
+                if ia_ind_edit.strip():
+                    actual = st.session_state["plan_otro"].strip()
+                    st.session_state["plan_otro"] = (actual + "\n" + ia_ind_edit.strip()).strip()
+                st.session_state["ia_plan_visible"] = False
+                st.success("Recomendaciones cargadas al plan.")
+                st.rerun()
+        with col_can:
+            if st.button("Cancelar", use_container_width=True):
+                st.session_state["ia_plan_visible"] = False
+                st.rerun()
+
+        st.divider()
 
     c1, c2 = st.columns(2)
     with c1:
