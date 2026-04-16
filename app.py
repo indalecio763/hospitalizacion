@@ -247,7 +247,7 @@ def init_state():
         "plan_ordenes": [],
         "plan_solicitudes": "",
         "plan_otro": "",
-        "api_key": os.getenv("ANTHROPIC_API_KEY", ""),
+        "api_key": st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY", "")),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -294,11 +294,22 @@ def generar_texto_examen():
     return "\n".join(bloques)
 
 
+def get_api_key():
+    try:
+        key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return st.session_state.get("api_key", "")
+
+
 def ia_generar(prompt_texto):
-    if not st.session_state["api_key"]:
+    api_key = get_api_key()
+    if not api_key:
         return "CONFIGURA TU API KEY DE ANTHROPIC EN LA BARRA LATERAL."
     try:
-        client = anthropic.Anthropic(api_key=st.session_state["api_key"])
+        client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
@@ -505,17 +516,17 @@ def generar_pdf():
 
 with st.sidebar:
     st.header("Configuración")
-    api_input = st.text_input(
-        "API Key Anthropic",
-        value=st.session_state["api_key"],
-        type="password",
-        help="Requerida para generar texto con IA",
-    )
-    if api_input != st.session_state["api_key"]:
-        st.session_state["api_key"] = api_input
-    if st.session_state["api_key"]:
-        st.success("API Key configurada")
+    if get_api_key():
+        st.success("IA lista para usar")
     else:
+        api_input = st.text_input(
+            "API Key Anthropic",
+            value=st.session_state["api_key"],
+            type="password",
+            help="Requerida para generar texto con IA",
+        )
+        if api_input != st.session_state["api_key"]:
+            st.session_state["api_key"] = api_input
         st.warning("Ingresa tu API Key para usar IA")
     st.divider()
     st.caption("Ingreso Hospitalización v1.0")
